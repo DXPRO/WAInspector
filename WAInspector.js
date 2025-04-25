@@ -1,13 +1,15 @@
 (async function() {
   'use strict';
   
+
+
   // ============================================================
   // MÓDULO: Core - Configuração e Utilitários Básicos
   // ============================================================
   const WAInspector = {
     config: {
-      version: '3.1',
-      licenseeName: 'Usuário WAInspector',
+      version: '3.2',
+      licenseeName: 'WAInspector',
       isLicensed: true
     },
     
@@ -61,6 +63,946 @@
       }
     }
   };
+
+  // ============================================================
+  // MÓDULO: Logger - Interceptação e registro de comunicações
+  // ============================================================
+  WAInspector.modules.logger = {
+    // Configurações
+    config: {
+      enabled: false,
+      colorize: true,
+      logTypes: {
+        appState: true,
+        logs: true,
+        received: true,
+        sent: true,
+        decode: true,
+        encode: true,
+      }
+    },
+
+    // Cores ANSI para o console
+    colors: {
+      reset: '\u001B[0m',
+      red: '\u001B[31m',
+      green: '\u001B[32m',
+      yellow: '\u001B[33m',
+      blue: '\u001B[34m',
+      magenta: '\u001B[35m',
+      cyan: '\u001B[36m',
+    },
+
+    // Prefixos para diferentes tipos de logs
+    prefixes: {},
+
+    // Array para armazenar logs capturados
+    logs: [],
+
+    // Inicializa o módulo
+    init: function() {
+      // Configurar prefixos coloridos
+      this.setupPrefixes();
+      
+      // Inicializar hooks de interceptação
+      this.setupHooks();
+      
+      // Adicionar à interface global
+      window.WALogger = this.createPublicAPI();
+      
+      console.log("✅ Módulo Logger inicializado com sucesso");
+      
+      return this;
+    },
+
+    // Método para parar o logger
+    stop: function() {
+      try {
+        console.log("Desativando módulo Logger...");
+        
+        // Desativar todos os tipos de logs
+        this.config.enabled = false;
+        Object.keys(this.config.logTypes).forEach(type => {
+          this.config.logTypes[type] = false;
+        });
+
+        // Restaurar funções originais
+        const restoreFunctions = {
+          'WAWebSyncdRequestBuilderBuild': { func: 'buildSyncIqNode', backup: 'syncIqBack' },
+          'WALogger': { func: 'LOG', backup: 'logBack' },
+          'WAWap': { func: 'decodeStanza', backup: 'decodeBackStanza' },
+          'decodeProtobuf': { func: 'decodeProtobuf', backup: 'decodeBack' },
+          'WAWap': { func: 'encodeStanza', backup: 'encodeBackStanza' },
+          'WAWebSendMsgCommonApi': { func: 'encodeAndPad', backup: 'encodeBack' }
+        };
+
+        Object.entries(restoreFunctions).forEach(([moduleName, { func, backup }]) => {
+          try {
+            if (window[backup]) {
+              const module = require(moduleName);
+              if (module && module[func]) {
+                module[func] = window[backup];
+                console.log(`✅ Função ${func} restaurada em ${moduleName}`);
+              }
+            }
+          } catch (err) {
+            console.warn(`⚠️ Não foi possível restaurar ${func} em ${moduleName}:`, err);
+          }
+        });
+
+        // Limpar logs armazenados
+        this.logs = [];
+        
+        // Atualizar UI se disponível
+        if (this.ui) {
+          const listLogs = document.getElementById('listLogs');
+          if (listLogs) {
+            listLogs.innerHTML = '';
+          }
+          const toggleBtn = document.getElementById('loggerToggle');
+          if (toggleBtn) {
+            toggleBtn.textContent = 'Logs: Desativados';
+          }
+        }
+
+        console.log("✅ Módulo Logger desativado com sucesso");
+      } catch (err) {
+        console.error("❌ Erro ao desativar o Logger:", err);
+      }
+    },
+
+    // Método para reiniciar o logger
+    restart: function() {
+      try {
+        console.log("Reiniciando módulo Logger...");
+        
+        // Reativar configurações
+        this.config.enabled = true;
+        Object.keys(this.config.logTypes).forEach(type => {
+          this.config.logTypes[type] = true;
+        });
+
+        // Reconfigurar hooks
+        this.setupHooks();
+
+        // Atualizar UI se disponível
+        if (this.ui) {
+          const toggleBtn = document.getElementById('loggerToggle');
+          if (toggleBtn) {
+            toggleBtn.textContent = 'Logs: Ativados';
+          }
+        }
+
+        console.log("✅ Módulo Logger reiniciado com sucesso");
+      } catch (err) {
+        console.error("❌ Erro ao reiniciar o Logger:", err);
+      }
+    },
+
+    // Configurar prefixos coloridos
+    setupPrefixes: function() {
+      this.prefixes = {
+        appState: `${this.colors.magenta}[APP STATE MUTATION]${this.colors.reset}`,
+        logs: `${this.colors.red}[LOG]${this.colors.reset}`,
+        received: `${this.colors.red}[RECEIVED]${this.colors.reset}`,
+        decode: `${this.colors.yellow}[DECODE]${this.colors.reset}`,
+        sent: `${this.colors.green}[SENT]${this.colors.reset}`,
+        encode: `${this.colors.yellow}[ENCODE]${this.colors.reset}`,
+      };
+    },
+
+    // Função de log principal
+    log: function(type, ...args) {
+      if (!this.config.enabled || !this.config.logTypes[type]) return;
+      
+      // Registrar no console
+      console.log(this.prefixes[type], ...args);
+      
+      // Armazenar para visualização na UI
+      const logEntry = {
+        type: type,
+        timestamp: new Date().toISOString(),
+        formattedTime: new Date().toLocaleTimeString(),
+        data: args
+      };
+      
+      this.logs.push(logEntry);
+      const index = this.logs.length - 1;
+      
+      // Atualizar UI se estiver disponível
+      if (WAInspector.modules.ui) {
+        this.updateLogCounter();
+        this.addLogToList(logEntry, index);
+      }
+    },
+
+    // Atualiza o contador de logs na UI
+    updateLogCounter: function() {
+      try {
+        // Atualizar contador total de logs
+        const countBadge = document.querySelector("#waInspectorTabs button[data-tab='logger'] .count");
+        if (countBadge) {
+          countBadge.textContent = this.logs.length;
+        }
+        
+        // Atualizar contadores de cada tipo de log
+        Object.keys(this.config.logTypes).forEach(logType => {
+          const countBadge = document.querySelector(`.toggle-wrapper .log-type-toggle[data-log-type="${logType}"] + .toggle-indicator + .log-type-count`);
+          if (countBadge) {
+            const count = this.logs.filter(log => log.type === logType).length;
+            countBadge.textContent = count;
+          }
+        });
+      } catch (err) {
+        console.warn("Erro ao atualizar contador de logs:", err);
+      }
+    },
+
+    // API pública para controle dos logs
+    createPublicAPI: function() {
+      const self = this;
+      return {
+        setEnabled: (enabled) => {
+          self.config.enabled = !!enabled;
+          console.log(`Logs ${self.config.enabled ? 'habilitados' : 'desabilitados'}`);
+        },
+        
+        setLogType: (type, enabled) => {
+          if (self.config.logTypes.hasOwnProperty(type)) {
+            self.config.logTypes[type] = !!enabled;
+            console.log(`Log tipo '${type}' ${self.config.logTypes[type] ? 'habilitado' : 'desabilitado'}`);
+          } else {
+            console.error(`Tipo de log '${type}' não encontrado`);
+          }
+        },
+        
+        getStatus: () => {
+          return {
+            enabled: self.config.enabled,
+            colorize: self.config.colorize,
+            logTypes: {...self.config.logTypes}
+          };
+        },
+        
+        getLogs: () => {
+          return [...self.logs];
+        },
+        
+        exportLogs: (format) => {
+          return self.exportLogs(format);
+        }
+      };
+    },
+    
+    // Função para exportar logs
+    exportLogs: function(format = 'json') {
+      try {
+        if (this.logs.length === 0) {
+          alert('Não há logs para exportar');
+          return;
+        }
+        
+        let content = '';
+        let filename = `wa_logs_${new Date().toISOString().replace(/:/g, '-')}.`;
+        let mimetype = '';
+        
+        if (format === 'json') {
+          content = JSON.stringify(this.logs, null, 2);
+          filename += 'json';
+          mimetype = 'application/json';
+        } else if (format === 'txt') {
+          content = this.logs.map(log => {
+            return `[${log.formattedTime}] [${log.type.toUpperCase()}] ${JSON.stringify(log.data)}`;
+          }).join('\n');
+          filename += 'txt';
+          mimetype = 'text/plain';
+        } else if (format === 'csv') {
+          content = 'Timestamp,Tipo,Dados\n';
+          content += this.logs.map(log => {
+            return `"${log.timestamp}","${log.type}","${JSON.stringify(log.data).replace(/"/g, '""')}"`;
+          }).join('\n');
+          filename += 'csv';
+          mimetype = 'text/csv';
+        }
+        
+        const blob = new Blob([content], { type: mimetype });
+        const url = URL.createObjectURL(blob);
+        
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = filename;
+        a.style.display = 'none';
+        document.body.appendChild(a);
+        a.click();
+        
+        setTimeout(() => {
+          document.body.removeChild(a);
+          URL.revokeObjectURL(url);
+        }, 100);
+        
+        return true;
+      } catch (err) {
+        console.error("Erro ao exportar logs:", err);
+        alert(`Erro ao exportar logs: ${err.message}`);
+        return false;
+      }
+    },
+    
+    // Adicionar os métodos para interceptar funções
+    setupHooks: function() {
+      try {
+        // Interceptar e implantar todos os hooks
+        this.setupAppStateLogger();
+        this.setupInternalLogger();
+        this.setupReceivedStanzaLogger();
+        this.setupDecodeLogger();
+        this.setupSentStanzaLogger();
+        this.setupEncodeLogger();
+      } catch (err) {
+        console.error("Erro ao configurar hooks de logging:", err);
+      }
+    },
+
+    // Função auxiliar para interceptar e substituir funções
+    interceptFunction: function(module, funcName, newFunc, backupName) {
+      try {
+        if (!window[backupName]) {
+          window[backupName] = module[funcName];
+        }
+        
+        module[funcName] = newFunc;
+        return true;
+      } catch (err) {
+        console.error(`Erro ao interceptar função ${funcName}:`, err);
+        return false;
+      }
+    },
+
+    // Hook 1: Registro de mutações de estado da aplicação
+    setupAppStateLogger: function() {
+      try {
+        const WAWebSyncdRequestBuilderBuild = require("WAWebSyncdRequestBuilderBuild");
+        const decodeProtobuf = require("decodeProtobuf");
+        const WASyncAction = require("WASyncAction.pb");
+        const self = this;
+        
+        this.interceptFunction(
+          WAWebSyncdRequestBuilderBuild, 
+          "buildSyncIqNode", 
+          function(a) {
+            const result = window.syncIqBack(a);
+            
+            if (self.config.logTypes.appState) {
+              const values = Array.from(a.values()).flat();
+              const decodedValues = values.map(v => ({
+                ...v,
+                binarySyncAction: decodeProtobuf.decodeProtobuf(
+                  WASyncAction.SyncActionValueSpec, 
+                  v.binarySyncAction
+                )
+              }));
+              
+              self.log('appState', decodedValues);
+            }
+            
+            return result;
+          }, 
+          "syncIqBack"
+        );
+        
+        console.log("✅ App State Logger configurado com sucesso");
+      } catch (error) {
+        console.error("❌ Erro ao configurar App State Logger:", error);
+      }
+    },
+
+    // Hook 2: Registro de logs internos do WhatsApp
+    setupInternalLogger: function() {
+      try {
+        const WALogger = require("WALogger");
+        const self = this;
+        
+        this.interceptFunction(
+          WALogger, 
+          "LOG", 
+          function(...args) {
+            const result = window.logBack(...args);
+            self.log('logs', ...args);
+            return result;
+          }, 
+          "logBack"
+        );
+        
+        console.log("✅ Internal Logger configurado com sucesso");
+      } catch (error) {
+        console.error("❌ Erro ao configurar Internal Logger:", error);
+      }
+    },
+
+    // Hook 3: Registro de stanzas recebidas
+    setupReceivedStanzaLogger: function() {
+      try {
+        const WAWap = require("WAWap");
+        const self = this;
+        
+        this.interceptFunction(
+          WAWap, 
+          "decodeStanza", 
+          async function(e, t) {
+            const result = await window.decodeBackStanza(e, t);
+            self.log('received', result);
+            return result;
+          }, 
+          "decodeBackStanza"
+        );
+        
+        console.log("✅ Received Stanza Logger configurado com sucesso");
+      } catch (error) {
+        console.error("❌ Erro ao configurar Received Stanza Logger:", error);
+      }
+    },
+
+    // Hook 4: Registro de mensagens decodificadas
+    setupDecodeLogger: function() {
+      try {
+        const decodeProtobuf = require("decodeProtobuf");
+        const self = this;
+        
+        this.interceptFunction(
+          decodeProtobuf, 
+          "decodeProtobuf", 
+          function(a, b) {
+            const result = window.decodeBack(a, b);
+            self.log('decode', result);
+            return result;
+          }, 
+          "decodeBack"
+        );
+        
+        console.log("✅ Decode Message Logger configurado com sucesso");
+      } catch (error) {
+        console.error("❌ Erro ao configurar Decode Message Logger:", error);
+      }
+    },
+
+    // Hook 5: Registro de stanzas enviadas
+    setupSentStanzaLogger: function() {
+      try {
+        const WAWap = require("WAWap");
+        const self = this;
+        
+        this.interceptFunction(
+          WAWap, 
+          "encodeStanza", 
+          function(...args) {
+            const result = window.encodeBackStanza(...args);
+            self.log('sent', args[0]);
+            return result;
+          }, 
+          "encodeBackStanza"
+        );
+        
+        console.log("✅ Sent Stanza Logger configurado com sucesso");
+      } catch (error) {
+        console.error("❌ Erro ao configurar Sent Stanza Logger:", error);
+      }
+    },
+
+    // Hook 6: Registro de mensagens codificadas
+    setupEncodeLogger: function() {
+      try {
+        const WAWebSendMsgCommonApi = require("WAWebSendMsgCommonApi");
+        const self = this;
+        
+        this.interceptFunction(
+          WAWebSendMsgCommonApi, 
+          "encodeAndPad", 
+          function(a) {
+            const result = window.encodeBack(a);
+            self.log('encode', a);
+            return result;
+          }, 
+          "encodeBack"
+        );
+        
+        console.log("✅ Encode Message Logger configurado com sucesso");
+      } catch (error) {
+        console.error("❌ Erro ao configurar Encode Message Logger:", error);
+      }
+    },
+    
+    // Métodos de UI para o Logger
+    setupUI: function(ui) {
+      this.ui = ui;
+      this.setupUIEvents();
+      this.updateLogCounter();
+    },
+
+    setupUIEvents: function() {
+      try {
+        const self = this;
+        
+        const toggleBtn = document.getElementById('loggerToggle');
+        if (toggleBtn) {
+          toggleBtn.addEventListener('click', function() {
+            self.config.enabled = !self.config.enabled;
+            this.textContent = `Logs: ${self.config.enabled ? 'Ativados' : 'Desativados'}`;
+            console.log(`Logs ${self.config.enabled ? 'habilitados' : 'desabilitados'}`);
+          });
+        }
+        
+        // Configurar toggles para tipos de logs individuais
+        const logTypeToggles = document.getElementById('loggerTypeToggles');
+        if (logTypeToggles) {
+          // Configurar botões de ativar/desativar todos
+          const enableAllBtn = document.getElementById('enableAllLogs');
+          const disableAllBtn = document.getElementById('disableAllLogs');
+          
+          if (enableAllBtn) {
+            enableAllBtn.setAttribute('data-tooltip', 'Ativar todos os tipos de logs');
+            enableAllBtn.addEventListener('click', function() {
+              // Ativar todos os tipos de logs
+              Object.keys(self.config.logTypes).forEach(type => {
+                self.config.logTypes[type] = true;
+              });
+              
+              // Atualizar todos os checkboxes na UI
+              document.querySelectorAll('.log-type-toggle').forEach(toggle => {
+                toggle.checked = true;
+                const wrapper = toggle.closest('.toggle-wrapper');
+                wrapper.classList.add('active');
+                wrapper.setAttribute('data-tooltip', `Clique para desativar logs do tipo ${toggle.dataset.logType}`);
+              });
+              
+              // Atualizar exibição dos logs
+              const listItems = document.querySelectorAll('#listLogs li');
+              listItems.forEach(item => {
+                if (self.config.logTypes[item.dataset.logType]) {
+                  item.style.display = '';
+                }
+              });
+              
+              console.log('Todos os tipos de logs ativados');
+            });
+          }
+          
+          if (disableAllBtn) {
+            disableAllBtn.setAttribute('data-tooltip', 'Desativar todos os tipos de logs');
+            disableAllBtn.addEventListener('click', function() {
+              // Desativar todos os tipos de logs
+              Object.keys(self.config.logTypes).forEach(type => {
+                self.config.logTypes[type] = false;
+              });
+              
+              // Atualizar todos os checkboxes na UI
+              document.querySelectorAll('.log-type-toggle').forEach(toggle => {
+                toggle.checked = false;
+                const wrapper = toggle.closest('.toggle-wrapper');
+                wrapper.classList.remove('active');
+                wrapper.setAttribute('data-tooltip', `Clique para ativar logs do tipo ${toggle.dataset.logType}`);
+              });
+              
+              // Atualizar exibição dos logs
+              const listItems = document.querySelectorAll('#listLogs li');
+              listItems.forEach(item => {
+                item.style.display = 'none';
+              });
+              
+              console.log('Todos os tipos de logs desativados');
+            });
+          }
+        
+          // Limpar conteúdo existente do container de toggles
+          const togglesContainer = logTypeToggles.querySelector('.toggles-container');
+          if (togglesContainer) {
+            togglesContainer.innerHTML = '';
+            
+            // Criar um toggle para cada tipo de log
+            Object.keys(self.config.logTypes).forEach(logType => {
+              const toggleWrapper = WAInspector.utils.createSafeElement('div', { 
+                className: `toggle-wrapper ${self.config.logTypes[logType] ? 'active' : ''}`,
+                'data-log-type': logType,
+                'data-tooltip': `Clique para ${self.config.logTypes[logType] ? 'desativar' : 'ativar'} logs do tipo ${logType}`
+              });
+              
+              const label = WAInspector.utils.createSafeElement(
+                'label', 
+                { className: 'log-type-label', for: `toggle_${logType}` }, 
+                `${logType.charAt(0).toUpperCase() + logType.slice(1)}`
+              );
+              
+              const toggle = WAInspector.utils.createSafeElement('input', { 
+                type: 'checkbox',
+                id: `toggle_${logType}`,
+                className: 'log-type-toggle',
+                'data-log-type': logType,
+                checked: self.config.logTypes[logType] ? 'checked' : '' 
+              });
+              
+              // Elemento decorativo para o toggle
+              const toggleIndicator = WAInspector.utils.createSafeElement('span', { 
+                className: 'toggle-indicator'
+              });
+              
+              // Exibir o número de logs deste tipo
+              const count = self.logs.filter(log => log.type === logType).length;
+              const countBadge = WAInspector.utils.createSafeElement('span', {
+                className: 'log-type-count'
+              }, count.toString());
+              
+              // Adicionar evento de clique ao wrapper para melhorar a usabilidade
+              toggleWrapper.addEventListener('click', function(e) {
+                // Evitar clicar duas vezes quando clicar no próprio checkbox
+                if (e.target !== toggle) {
+                  toggle.checked = !toggle.checked;
+                  
+                  // Disparar evento de change manualmente
+                  const changeEvent = new Event('change');
+                  toggle.dispatchEvent(changeEvent);
+                }
+              });
+              
+              toggle.addEventListener('change', function() {
+                const type = this.dataset.logType;
+                self.config.logTypes[type] = this.checked;
+                
+                // Atualizar estilo do toggle
+                if (this.checked) {
+                  toggleWrapper.classList.add('active');
+                  toggleWrapper.setAttribute('data-tooltip', `Clique para desativar logs do tipo ${type}`);
+                } else {
+                  toggleWrapper.classList.remove('active');
+                  toggleWrapper.setAttribute('data-tooltip', `Clique para ativar logs do tipo ${type}`);
+                }
+                
+                console.log(`Log tipo '${type}' ${self.config.logTypes[type] ? 'habilitado' : 'desabilitado'}`);
+                
+                // Atualizar exibição dos logs na lista
+                const listItems = document.querySelectorAll('#listLogs li');
+                listItems.forEach(item => {
+                  if (item.dataset.logType === type) {
+                    item.style.display = self.config.logTypes[type] ? '' : 'none';
+                  }
+                });
+              });
+              
+              toggleWrapper.appendChild(label);
+              toggleWrapper.appendChild(toggle);
+              toggleWrapper.appendChild(toggleIndicator);
+              toggleWrapper.appendChild(countBadge);
+              togglesContainer.appendChild(toggleWrapper);
+            });
+            
+            // Função para corrigir o DOM e garantir que todos os elementos estejam com as classes corretas
+            setTimeout(() => {
+              try {
+                // Corrigir problemas de classname vs className no DOM
+                const toggleWrappers = document.querySelectorAll('.toggles-container > div');
+                toggleWrappers.forEach(wrapper => {
+                  // Verificar e corrigir atributos classname vs className
+                  if (wrapper.hasAttribute('classname')) {
+                    const value = wrapper.getAttribute('classname');
+                    wrapper.removeAttribute('classname');
+                    wrapper.setAttribute('class', value);
+                  }
+                  
+                  // Garantir que o wrapper tenha a classe toggle-wrapper
+                  if (!wrapper.classList.contains('toggle-wrapper')) {
+                    wrapper.classList.add('toggle-wrapper');
+                  }
+                  
+                  // Verificar o estado ativo correto
+                  const logType = wrapper.getAttribute('data-log-type');
+                  if (logType && self.config.logTypes[logType]) {
+                    wrapper.classList.add('active');
+                  }
+                  
+                  // Corrigir os elementos filhos
+                  const children = wrapper.children;
+                  for (let i = 0; i < children.length; i++) {
+                    const child = children[i];
+                    
+                    // Corrigir label
+                    if (child.tagName === 'LABEL') {
+                      if (child.hasAttribute('classname')) {
+                        const value = child.getAttribute('classname');
+                        child.removeAttribute('classname');
+                        child.setAttribute('class', value);
+                      }
+                      if (!child.classList.contains('log-type-label')) {
+                        child.classList.add('log-type-label');
+                      }
+                    }
+                    
+                    // Corrigir span para toggle-indicator
+                    if (child.tagName === 'SPAN' && i === 2) {
+                      if (child.hasAttribute('classname')) {
+                        const value = child.getAttribute('classname');
+                        child.removeAttribute('classname');
+                        child.setAttribute('class', value);
+                      }
+                      if (!child.classList.contains('toggle-indicator')) {
+                        child.classList.add('toggle-indicator');
+                      }
+                    }
+                    
+                    // Corrigir span para log-type-count
+                    if (child.tagName === 'SPAN' && i === 3) {
+                      if (child.hasAttribute('classname')) {
+                        const value = child.getAttribute('classname');
+                        child.removeAttribute('classname');
+                        child.setAttribute('class', value);
+                      }
+                      if (!child.classList.contains('log-type-count')) {
+                        child.classList.add('log-type-count');
+                      }
+                    }
+                    
+                    // Corrigir checkbox
+                    if (child.tagName === 'INPUT' && child.type === 'checkbox') {
+                      if (child.hasAttribute('classname')) {
+                        const value = child.getAttribute('classname');
+                        child.removeAttribute('classname');
+                        child.setAttribute('class', value);
+                      }
+                      if (!child.classList.contains('log-type-toggle')) {
+                        child.classList.add('log-type-toggle');
+                      }
+                    }
+                  }
+                });
+                
+                console.log('✅ Correção de classes e atributos concluída');
+              } catch (err) {
+                console.error('❌ Erro ao corrigir classes e atributos:', err);
+              }
+            }, 100);
+          }
+        }
+        
+        const typeFilter = document.getElementById('loggerTypeFilter');
+        if (typeFilter) {
+          typeFilter.addEventListener('change', function() {
+            const selectedType = this.value;
+            const listItems = document.querySelectorAll('#listLogs li');
+            
+            listItems.forEach(item => {
+              if (selectedType === 'all' || item.dataset.logType === selectedType) {
+                // Verifica se o tipo de log está ativado
+                const logType = item.dataset.logType;
+                item.style.display = (selectedType === 'all' || item.dataset.logType === selectedType) && 
+                                    self.config.logTypes[logType] ? '' : 'none';
+              } else {
+                item.style.display = 'none';
+              }
+            });
+          });
+        }
+        
+        const clearBtn = document.getElementById('loggerClear');
+        if (clearBtn) {
+          clearBtn.addEventListener('click', function() {
+            self.logs = [];
+            document.getElementById('listLogs').innerHTML = '';
+            self.updateLogCounter();
+          });
+        }
+        
+        const exportBtn = document.getElementById('loggerExport');
+        const formatSelect = document.getElementById('loggerExportFormat');
+        if (exportBtn && formatSelect) {
+          exportBtn.addEventListener('click', function() {
+            const format = formatSelect.value;
+            self.exportLogs(format);
+          });
+        }
+      } catch (err) {
+        console.warn("Erro ao configurar eventos da UI do Logger:", err);
+      }
+    },
+
+    // Adicionar um log à lista na UI
+    addLogToList: function(logEntry, index) {
+      try {
+        if (!this.ui) return;
+        
+        const list = document.getElementById('listLogs');
+        if (!list) return;
+        
+        // Verificar se o tipo de log está ativado
+        if (!this.config.logTypes[logEntry.type]) return;
+        
+        const li = WAInspector.utils.createSafeElement('li');
+        li.dataset.logIndex = index;
+        li.dataset.logType = logEntry.type;
+        
+        const logTime = WAInspector.utils.createSafeElement(
+          'span', 
+          { className: 'log-time' }, 
+          logEntry.formattedTime
+        );
+        
+        const logType = WAInspector.utils.createSafeElement(
+          'span', 
+          { className: `log-type ${logEntry.type}` }, 
+          logEntry.type.toUpperCase()
+        );
+        
+        li.appendChild(logTime);
+        li.appendChild(logType);
+        
+        let previewText = '';
+        try {
+          if (logEntry.data && logEntry.data.length) {
+            if (typeof logEntry.data[0] === 'string') {
+              previewText = logEntry.data[0].substring(0, 50);
+            } else if (typeof logEntry.data[0] === 'object') {
+              previewText = 'Objeto';
+              if (logEntry.data[0] !== null) {
+                if (Array.isArray(logEntry.data[0])) {
+                  previewText = `Array(${logEntry.data[0].length})`;
+                } else {
+                  const objKeys = Object.keys(logEntry.data[0]);
+                  if (objKeys.length) {
+                    const firstKey = objKeys[0];
+                    previewText = `{ ${firstKey}: ${typeof logEntry.data[0][firstKey]} ... }`;
+                  }
+                }
+              }
+            } else {
+              previewText = String(logEntry.data[0]).substring(0, 50);
+            }
+          }
+        } catch (previewErr) {
+          previewText = 'Erro ao gerar prévia';
+          console.warn("Erro ao gerar prévia do log:", previewErr);
+        }
+        
+        const preview = WAInspector.utils.createSafeElement(
+          'span', 
+          { className: 'log-preview' }, 
+          previewText
+        );
+        
+        li.appendChild(preview);
+        
+        li.addEventListener('click', () => {
+          try {
+            list.querySelectorAll('li').forEach(el => el.classList.remove('selected'));
+            li.classList.add('selected');
+            
+            const log = this.logs[index];
+            if (!log) return;
+            
+            this.showLogDetails(log);
+          } catch (clickErr) {
+            console.warn("Erro ao processar clique no log:", clickErr);
+          }
+        });
+        
+        list.prepend(li);
+        
+        const maxLogs = 200;
+        const items = list.querySelectorAll('li');
+        if (items.length > maxLogs) {
+          for (let i = maxLogs; i < items.length; i++) {
+            items[i].remove();
+          }
+        }
+      } catch (err) {
+        console.warn("Erro ao adicionar log à lista:", err);
+      }
+    },
+
+    // Mostrar detalhes de um log selecionado
+    showLogDetails: function(logEntry) {
+      try {
+        const detailInfo = document.querySelector('#waDetailInfo');
+        const eventDetail = document.querySelector('#waEventDetail');
+        const logDetail = document.querySelector('#waLogDetail');
+        
+        if (!detailInfo || !logDetail) return;
+        
+        if (eventDetail) eventDetail.classList.remove('visible');
+        
+        console.group(`📝 Logger - ${logEntry.type.toUpperCase()}`);
+        console.log('Tipo:', logEntry.type);
+        console.log('Timestamp:', logEntry.timestamp);
+        console.log('Horário formatado:', logEntry.formattedTime);
+        console.log('Dados:', logEntry.data);
+        console.groupEnd();
+        
+        // Criar um header com informações sobre o log
+        const logTypeColors = {
+          appState: '#7B1FA2',
+          logs: '#C62828',
+          received: '#C62828',
+          sent: '#2E7D32',
+          decode: '#F57F17',
+          encode: '#F57F17'
+        };
+        
+        const typeColor = logTypeColors[logEntry.type] || '#333';
+        
+        let detailHtml = `
+          <div class="log-detail-header">
+            <span class="log-badge" style="background-color: ${typeColor}">
+              ${WAInspector.utils.sanitizeHTML(logEntry.type.toUpperCase())}
+            </span>
+            <div class="log-timestamp">
+              <span class="timestamp-label">Timestamp:</span> 
+              <span class="timestamp-value">${WAInspector.utils.sanitizeHTML(logEntry.timestamp || 'N/A')}</span>
+            </div>
+            <div class="log-time">
+              <span class="time-label">Horário:</span> 
+              <span class="time-value">${WAInspector.utils.sanitizeHTML(logEntry.formattedTime || 'N/A')}</span>
+            </div>
+          </div>
+        `;
+        
+        detailInfo.innerHTML = detailHtml;
+        
+        try {
+          // Limpar e preparar o container de detalhes
+          logDetail.innerHTML = `
+            <div class="log-data-header">
+              <strong>Dados do Log</strong>
+              <div class="log-data-type">${typeof logEntry.data === 'object' ? (Array.isArray(logEntry.data) ? 'Array' : 'Objeto') : typeof logEntry.data}</div>
+            </div>
+            <div class="log-data-content"></div>
+          `;
+          
+          const dataContent = logDetail.querySelector('.log-data-content');
+          
+          // Preparar dados para visualização
+          const dataToView = logEntry.data.length === 1 ? logEntry.data[0] : logEntry.data;
+          
+          // Criar visualizador interativo
+          const jsonViewer = WAInspector.modules.ui.createInteractiveViewer(dataToView);
+          dataContent.appendChild(jsonViewer);
+          logDetail.classList.add('visible');
+        } catch (formatErr) {
+          console.warn("Erro ao formatar valor do log:", formatErr);
+          logDetail.innerHTML = `
+            <div class="log-data-header">
+              <strong>Dados do Log</strong>
+              <div class="log-data-type error">Erro</div>
+            </div>
+            <div class="wa-error">
+              Erro ao formatar dados: ${WAInspector.utils.sanitizeHTML(formatErr.message)}
+            </div>
+          `;
+          logDetail.classList.add('visible');
+        }
+      } catch (err) {
+        console.warn("Erro ao mostrar detalhes do log:", err);
+        if (WAInspector.modules.ui) {
+          WAInspector.modules.ui.showError(`Erro ao mostrar detalhes: ${err.message}`);
+        }
+      }
+    }
+  };
+
   
   // Log informativo inicial
   console.log(`WAInspector v${WAInspector.config.version}: Ativado para '${WAInspector.config.licenseeName}'`);
@@ -677,6 +1619,12 @@
         }
       };
       
+      // Verificar se o módulo webpack foi inicializado
+      if (!WAInspector.modules.webpack || !WAInspector.modules.webpack.wpRequire) {
+        console.warn("Módulo webpack não inicializado. Tentando inicializar...");
+        await WAInspector.modules.webpack.init();
+      }
+      
       // Detectar através de diferentes abordagens dependendo da disponibilidade
       if (window.WPP && window.WPP.whatsapp) {
         // Abordagem via WPP
@@ -696,73 +1644,78 @@
           storeModules.status = models.StatusStore || models.Status;
           storeModules.call = models.CallStore || models.Call;
         }
-      } else {
-        // Abordagem direta via webpack
-        console.log("Detectando stores via webpack...");
-        
-        const wpRequire = WAInspector.modules.webpack.wpRequire;
-        // Buscar módulos por palavras-chave
-        const potentialStoreModules = [];
-        for (const [id, factory] of Object.entries(wpRequire.m || {})) {
-          try {
-            if (!factory) continue;
-            const src = factory.toString();
-            if (/(Chat|Contact|Conn|Message|Msg|GroupMetadata|Status|Call).*Store/.test(src)) {
-              const module = WAInspector.modules.webpack.secureRequire(id);
-              if (module && !module.__blocked) {
-                potentialStoreModules.push({ id, module });
-              }
+      }
+      
+      // Abordagem direta via webpack
+      console.log("Detectando stores via webpack...");
+      
+      const wpRequire = WAInspector.modules.webpack.wpRequire;
+      if (!wpRequire || !wpRequire.m) {
+        console.warn("wpRequire não disponível. Pulando detecção via webpack.");
+        return storeModules;
+      }
+      
+      // Buscar módulos por palavras-chave
+      const potentialStoreModules = [];
+      for (const [id, factory] of Object.entries(wpRequire.m)) {
+        try {
+          if (!factory) continue;
+          const src = factory.toString();
+          if (/(Chat|Contact|Conn|Message|Msg|GroupMetadata|Status|Call).*Store/.test(src)) {
+            const module = WAInspector.modules.webpack.secureRequire(id);
+            if (module && !module.__blocked) {
+              potentialStoreModules.push({ id, module });
             }
-          } catch (err) {
-            console.warn(`Erro ao analisar módulo #${id} para store:`, err);
           }
+        } catch (err) {
+          console.warn(`Erro ao analisar módulo #${id} para store:`, err);
         }
-        
-        console.log(`Encontrados ${potentialStoreModules.length} potenciais módulos de store`);
-        
-        // Armazenar para futuro acesso
-        storeModules.modules.webpack = potentialStoreModules;
-        
-        // Analisar módulos encontrados
-        for (const { id, module } of potentialStoreModules) {
-          try {
-            // Verificar cada módulo por características de diferentes stores
-            
-            // Chat Store
-            if (module.Chat && module.Chat.models) {
-              storeModules.chat = module;
-            }
-            // Contact Store
-            else if (module.Contact && module.Contact.models) {
-              storeModules.contact = module;
-            }
-            // Message Store
-            else if (module.Msg && module.Msg.models) {
-              storeModules.message = module;
-            }
-            // Connection Store
-            else if (module.Conn || (module.default && (module.default.state || module.default.connection))) {
-              storeModules.connection = module.Conn || module.default;
-            }
-            // Group Store
-            else if (module.GroupMetadata && module.GroupMetadata.models) {
-              storeModules.group = module;
-            }
-            // Presence Store
-            else if (module.Presence || (module.default && module.default.participants)) {
-              storeModules.presence = module.Presence || module.default;
-            }
-            // Status Store
-            else if (module.Status && module.Status.models) {
-              storeModules.status = module;
-            }
-            // Call Store
-            else if (module.Call && module.Call.models) {
-              storeModules.call = module;
-            }
-          } catch (err) {
-            console.warn(`Erro ao processar módulo de store #${id}:`, err);
+      }
+      
+      console.log(`Encontrados ${potentialStoreModules.length} potenciais módulos de store`);
+      
+      // Armazenar para futuro acesso
+      storeModules.modules.webpack = potentialStoreModules;
+      
+      // Analisar módulos encontrados
+      for (const { id, module } of potentialStoreModules) {
+        try {
+          // Verificar cada módulo por características de diferentes stores
+          
+          // Chat Store
+          if (module.Chat && module.Chat.models) {
+            storeModules.chat = module;
           }
+          // Contact Store
+          else if (module.Contact && module.Contact.models) {
+            storeModules.contact = module;
+          }
+          // Message Store
+          else if (module.Msg && module.Msg.models) {
+            storeModules.message = module;
+          }
+          // Connection Store
+          else if (module.Conn || (module.default && (module.default.state || module.default.connection))) {
+            storeModules.connection = module.Conn || module.default;
+          }
+          // Group Store
+          else if (module.GroupMetadata && module.GroupMetadata.models) {
+            storeModules.group = module;
+          }
+          // Presence Store
+          else if (module.Presence || (module.default && module.default.participants)) {
+            storeModules.presence = module.Presence || module.default;
+          }
+          // Status Store
+          else if (module.Status && module.Status.models) {
+            storeModules.status = module;
+          }
+          // Call Store
+          else if (module.Call && module.Call.models) {
+            storeModules.call = module;
+          }
+        } catch (err) {
+          console.warn(`Erro ao processar módulo de store #${id}:`, err);
         }
       }
       
@@ -864,6 +1817,31 @@
         --header-height: 50px;
         --tab-height: 45px;
         --font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      }
+      
+      /* Botão de reabrir */
+      #waReopen {
+        position: fixed;
+        top: 10px;
+        right: 10px;
+        width: 30px;
+        height: 30px;
+        background: var(--primary-color);
+        color: white;
+        border-radius: 50%;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        cursor: pointer;
+        font-size: 20px;
+        z-index: 99998;
+        box-shadow: 0 2px 5px rgba(0,0,0,0.2);
+        transition: all 0.2s;
+      }
+      
+      #waReopen:hover {
+        background: var(--secondary-color);
+        transform: scale(1.1);
       }
       
       /* Painel principal */
@@ -1129,88 +2107,817 @@
   }
   
   // Criar painel base da interface
-  function createBasePanel() {
-    const panel = document.createElement('div');
-    panel.id = 'waInspectorPanel';
-    panel.innerHTML = `
-      <div id='waHeader'>
-        <h2>
-          <span id="waMinimizeIndicator">▶</span>
-          WAInspector v${WAInspector.config.version}
-          <span class='wa-version'>WhatsApp ${WAInspector.utils.sanitizeHTML(WAInspector.data.whatsappVersion)}</span>
-        </h2>
-        <div id="waHeaderControls">
-          <div id='waMinimize'>_</div>
-          <div id='waClose'>&times;</div>
+ // Modificar a função createBasePanel() para adicionar uma nova aba
+function createBasePanel() {
+  const panel = document.createElement('div');
+  panel.id = 'waInspectorPanel';
+  panel.innerHTML = `
+    <div id='waHeader'>
+      <h2>
+        <span id="waMinimizeIndicator">▶</span>
+        WAInspector v${WAInspector.config.version}
+        <span class='wa-version'>WhatsApp ${WAInspector.utils.sanitizeHTML(WAInspector.data.whatsappVersion)}</span>
+      </h2>
+      <div id="waHeaderControls">
+        <div id='waMinimize'>_</div>
+        <div id='waClose'>&times;</div>
+      </div>
+    </div>
+    <div id='waInspectorTabs'>
+      <button data-tab='functions' class='active'>
+        <span class='tab-icon'>⚙️</span>
+        <span class='tab-text'>Funções</span>
+        <span class='count'></span>
+      </button>
+      <button data-tab='important'>
+        <span class='tab-icon'>⭐</span>
+        <span class='tab-text'>Importantes</span>
+        <span class='count'></span>
+      </button>
+      <button data-tab='all'>
+        <span class='tab-icon'>📦</span>
+        <span class='tab-text'>Todos</span>
+        <span class='count'></span>
+      </button>
+      <button data-tab='namespace'>
+        <span class='tab-icon'>🔍</span>
+        <span class='tab-text'>Namespace</span>
+        <span class='count'></span>
+      </button>
+      <button data-tab='events'>
+        <span class='tab-icon'>📡</span>
+        <span class='tab-text'>Eventos</span>
+        <span class='count'></span>
+      </button>
+      <button data-tab='logger'>
+        <span class='tab-icon'>📝</span>
+        <span class='tab-text'>Logger</span>
+        <span class='count'></span>
+      </button>
+    </div>
+    <div id='waInspectorContent'>
+      <input id='waSearch' placeholder='🔍 Pesquisar...' />
+      <div id='tab-functions' class='wa-content active'><ul id='listFunctions' class='wa-list'></ul></div>
+      <div id='tab-important' class='wa-content'><ul id='listImportant' class='wa-list'></ul></div>
+      <div id='tab-all' class='wa-content'>
+        <button id='loadMore'>Carregar mais 50 módulos</button>
+        <ul id='listAll' class='wa-list'></ul>
+      </div>
+      <div id='tab-namespace' class='wa-content'><ul id='listNS' class='wa-list'></ul></div>
+      <div id='tab-events' class='wa-content'><ul id='listEvents' class='wa-list'></ul></div>
+       <div id='tab-logger' class='wa-content'>
+    <div class="logger-header">
+      <div class="logger-controls">
+        <button id="loggerToggle" class="wa-button">Logs: Ativados</button>
+        <button id="loggerClear" class="wa-button">Limpar logs</button>
+        <div class="logger-export-group">
+          <button id="loggerExport" class="wa-button">Exportar</button>
+          <select id="loggerExportFormat">
+            <option value="json">JSON</option>
+            <option value="txt">Texto</option>
+            <option value="csv">CSV</option>
+          </select>
         </div>
       </div>
-      <div id='waInspectorTabs'>
-        <button data-tab='functions' class='active'>
-          <span class='tab-icon'>⚙️</span>
-          <span class='tab-text'>Funções</span>
-          <span class='count'></span>
-        </button>
-        <button data-tab='important'>
-          <span class='tab-icon'>⭐</span>
-          <span class='tab-text'>Importantes</span>
-          <span class='count'></span>
-        </button>
-        <button data-tab='all'>
-          <span class='tab-icon'>📦</span>
-          <span class='tab-text'>Todos</span>
-          <span class='count'></span>
-        </button>
-        <button data-tab='namespace'>
-          <span class='tab-icon'>🔍</span>
-          <span class='tab-text'>Namespace</span>
-          <span class='count'></span>
-        </button>
-        <button data-tab='events'>
-          <span class='tab-icon'>📡</span>
-          <span class='tab-text'>Eventos</span>
-          <span class='count'></span>
-        </button>
+      
+      <div class="logger-filter-section">
+        <div class="filter-label">Filtrar por tipo:</div>
+        <select id="loggerTypeFilter">
+          <option value="all">Todos os tipos</option>
+          <option value="appState">Estado da App</option>
+          <option value="logs">Logs</option>
+          <option value="received">Recebidos</option>
+          <option value="sent">Enviados</option>
+          <option value="decode">Decode</option>
+          <option value="encode">Encode</option>
+        </select>
       </div>
-      <div id='waInspectorContent'>
-        <input id='waSearch' placeholder='🔍 Pesquisar...' />
-        <div id='tab-functions' class='wa-content active'><ul id='listFunctions' class='wa-list'></ul></div>
-        <div id='tab-important' class='wa-content'><ul id='listImportant' class='wa-list'></ul></div>
-        <div id='tab-all' class='wa-content'>
-          <button id='loadMore'>Carregar mais 50 módulos</button>
-          <ul id='listAll' class='wa-list'></ul>
+    </div>
+    
+    <div id="loggerTypeToggles" class="logger-type-toggles">
+      <div class="toggles-header">
+        <span class="toggles-title">Ativar/Desativar Tipos de Logs</span>
+        <div class="toggles-actions">
+          <button id="enableAllLogs" class="toggle-action-btn enable-all">Ativar Todos</button>
+          <button id="disableAllLogs" class="toggle-action-btn disable-all">Desativar Todos</button>
         </div>
-        <div id='tab-namespace' class='wa-content'><ul id='listNS' class='wa-list'></ul></div>
-        <div id='tab-events' class='wa-content'><ul id='listEvents' class='wa-list'></ul></div>
       </div>
-      <div id='waDetailPane'>
-        <div id='waDetailInfo'><em>Clique em um item para ver detalhes</em></div>
-        <div id='waEventDetail'></div>
+      <div class="toggles-container">
+        <!-- Os toggles para tipos de logs serão criados dinamicamente no código -->
       </div>
-      <div id='waStatusBar'>
-        <span>WAInspector v${WAInspector.config.version}</span>
-        <span id='waWatermark'>Licenciado para: ${WAInspector.utils.sanitizeHTML(WAInspector.config.licenseeName)}</span>
-        <span>WPP ${WAInspector.utils.sanitizeHTML(window.WPP && window.WPP.version ? window.WPP.version : 'não disponível')}</span>
+    </div>
+    
+    <div class="logger-content">
+      <div class="logger-list-container">
+        <div class="section-header">Lista de Logs</div>
+        <ul id='listLogs' class='wa-list'></ul>
       </div>
-    `;
-    document.body.appendChild(panel);
-    
-    // Configurar controles
-    const closeBtn = panel.querySelector('#waClose');
-    const minimizeBtn = panel.querySelector('#waMinimize');
-    
-    if (closeBtn) {
-      closeBtn.addEventListener('click', () => panel.remove());
-    }
-    
-    if (minimizeBtn) {
-      minimizeBtn.addEventListener('click', () => {
-        panel.classList.toggle('minimized');
-        minimizeBtn.textContent = panel.classList.contains('minimized') ? '+' : '_';
-      });
-    }
-    
-    return panel;
+    </div>
+  </div>
+    </div>
+    <div id='waDetailPane'>
+      <div id='waDetailInfo'><em>Clique em um item para ver detalhes</em></div>
+      <div id='waEventDetail'></div>
+      <div id='waLogDetail'></div>
+    </div>
+    <div id='waStatusBar'>
+      <span>WAInspector v${WAInspector.config.version}</span>
+      <span id='waWatermark'>Licenciado para: ${WAInspector.utils.sanitizeHTML(WAInspector.config.licenseeName)}</span>
+      <span>WPP ${WAInspector.utils.sanitizeHTML(window.WPP && window.WPP.version ? window.WPP.version : 'não disponível')}</span>
+    </div>
+  `;
+  
+  // Adicionar estilos para a aba de Logger
+  // Modificar a adição de estilos
+const loggerStyles = document.createElement('style');
+loggerStyles.textContent = `
+  .logger-header {
+    background: var(--light-bg);
+    border-bottom: 1px solid var(--border-color);
+    padding: 10px;
   }
+  
+  .logger-controls {
+    display: flex;
+    gap: 10px;
+    margin-bottom: 10px;
+    flex-wrap: wrap;
+    align-items: center;
+  }
+  
+  .logger-export-group {
+    display: flex;
+    align-items: center;
+  }
+  
+  .logger-filter-section {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-top: 10px;
+    padding-top: 10px;
+    border-top: 1px dashed #ddd;
+  }
+  
+  .filter-label {
+    font-weight: 500;
+    color: #555;
+  }
+  
+  .wa-button {
+    padding: 8px 12px;
+    background: var(--primary-color);
+    color: white;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    font-weight: 500;
+    transition: background 0.2s;
+  }
+  
+  .wa-button:hover {
+    background: var(--secondary-color);
+  }
+  
+  .logger-controls select, .logger-filter-section select {
+    padding: 8px;
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    background: white;
+  }
+  
+  .logger-type-toggles {
+    display: flex;
+    flex-direction: column;
+    background: #f8f8f8;
+    border-bottom: 1px solid var(--border-color);
+  }
+  
+  .toggles-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 8px 12px;
+    background-color: #f0f0f0;
+    border-bottom: 1px solid #ddd;
+  }
+  
+  .toggles-title {
+    font-weight: 600;
+    color: #444;
+    font-size: 13px;
+  }
+  
+  .toggles-actions {
+    display: flex;
+    gap: 8px;
+  }
+  
+  .toggle-action-btn {
+    background: none;
+    border: none;
+    font-size: 12px;
+    padding: 5px 10px;
+    border-radius: 20px;
+    cursor: pointer;
+    transition: all 0.3s ease;
+    color: #555;
+    position: relative;
+    overflow: hidden;
+    font-weight: 500;
+    border: 1px solid transparent;
+  }
+  
+  .toggle-action-btn::before {
+    content: '';
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 0;
+    height: 0;
+    background: rgba(0,0,0,0.05);
+    border-radius: 50%;
+    transform: translate(-50%, -50%);
+    transition: width 0.3s ease, height 0.3s ease;
+    z-index: -1;
+  }
+  
+  .toggle-action-btn:hover {
+    background: rgba(0,0,0,0.03);
+    box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+  }
+  
+  .toggle-action-btn:hover::before {
+    width: 150%;
+    height: 150%;
+  }
+  
+  .toggle-action-btn:active {
+    transform: scale(0.97);
+    transition: transform 0.1s;
+  }
+  
+  .toggle-action-btn.enable-all {
+    color: #2E7D32;
+  }
+  
+  .toggle-action-btn.enable-all:hover {
+    background-color: rgba(46, 125, 50, 0.08);
+    border-color: rgba(46, 125, 50, 0.3);
+  }
+  
+  .toggle-action-btn.disable-all {
+    color: #C62828;
+  }
+  
+  .toggle-action-btn.disable-all:hover {
+    background-color: rgba(198, 40, 40, 0.08);
+    border-color: rgba(198, 40, 40, 0.3);
+  }
+  
+  .toggle-wrapper {
+    display: flex;
+    align-items: center;
+    background: white;
+    padding: 6px 10px;
+    border-radius: 30px;
+    border: 1px solid #ddd;
+    transition: all 0.3s ease;
+    position: relative;
+    margin: 3px;
+    cursor: pointer;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+    overflow: hidden;
+  }
+  
+  .toggle-wrapper::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: rgba(0,0,0,0.03);
+    opacity: 0;
+    transition: opacity 0.3s ease;
+    z-index: 0;
+    pointer-events: none;
+  }
+  
+  .toggle-wrapper:hover {
+    box-shadow: 0 3px 8px rgba(0,0,0,0.1);
+    transform: translateY(-2px);
+  }
+  
+  .toggle-wrapper:hover::before {
+    opacity: 1;
+  }
+  
+  .toggle-wrapper.active {
+    border-color: var(--primary-color);
+    background-color: #f9f8ff;
+  }
+  
+  .toggle-wrapper:active {
+    transform: translateY(0);
+    box-shadow: 0 1px 2px rgba(0,0,0,0.1);
+    transition: all 0.1s ease;
+  }
+  
+  .log-type-label {
+    margin-right: 8px;
+    font-size: 13px;
+    cursor: pointer;
+    font-weight: 500;
+    user-select: none;
+    position: relative;
+    z-index: 1;
+    transition: all 0.2s ease;
+  }
+  
+  .toggle-wrapper:hover .log-type-label {
+    color: var(--primary-color);
+  }
+  
+  .log-type-toggle {
+    cursor: pointer;
+    opacity: 0;
+    position: absolute;
+    z-index: 2;
+  }
+  
+  .toggle-indicator {
+    display: inline-block;
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    background-color: #f0f0f0;
+    position: relative;
+    transition: all 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+    border: 1px solid #ccc;
+    margin-right: 8px;
+    box-shadow: inset 0 1px 3px rgba(0,0,0,0.05);
+    z-index: 1;
+  }
+  
+  .toggle-indicator:after {
+    content: '';
+    position: absolute;
+    display: none;
+    left: 6px;
+    top: 3px;
+    width: 5px;
+    height: 9px;
+    border: solid white;
+    border-width: 0 2px 2px 0;
+    transform: rotate(45deg);
+    transition: all 0.2s ease;
+  }
+  
+  .log-type-toggle:checked + .toggle-indicator {
+    background-color: var(--primary-color);
+    border-color: var(--primary-color);
+    transform: scale(1.1);
+  }
+  
+  .toggle-wrapper:hover .toggle-indicator {
+    box-shadow: 0 0 0 3px rgba(0, 123, 255, 0.1);
+  }
+  
+  .log-type-toggle:checked + .toggle-indicator:after {
+    display: block;
+    animation: checkmark 0.2s ease-in-out forwards;
+  }
+  
+  @keyframes checkmark {
+    0% {
+      transform: rotate(45deg) scale(0);
+      opacity: 0;
+    }
+    100% {
+      transform: rotate(45deg) scale(1);
+      opacity: 1;
+    }
+  }
+  
+  /* Cores personalizadas para os toggles por tipo */
+  #toggle_appState:checked + .toggle-indicator { background: #7B1FA2; border-color: #7B1FA2; }
+  #toggle_logs:checked + .toggle-indicator { background: #C62828; border-color: #C62828; }
+  #toggle_received:checked + .toggle-indicator { background: #C62828; border-color: #C62828; }
+  #toggle_sent:checked + .toggle-indicator { background: #2E7D32; border-color: #2E7D32; }
+  #toggle_decode:checked + .toggle-indicator { background: #F57F17; border-color: #F57F17; }
+  #toggle_encode:checked + .toggle-indicator { background: #F57F17; border-color: #F57F17; }
+  
+  /* Efeito de foco para acessibilidade */
+  .log-type-toggle:focus + .toggle-indicator {
+    box-shadow: 0 0 0 3px rgba(0, 123, 255, 0.25);
+  }
+  
+  .log-type-count {
+    margin-left: 6px;
+    font-size: 11px;
+    background: #f0f0f0;
+    border-radius: 10px;
+    padding: 2px 7px;
+    color: #555;
+    min-width: 20px;
+    text-align: center;
+    font-weight: 600;
+    transition: all 0.3s ease;
+    box-shadow: inset 0 1px 2px rgba(0,0,0,0.05);
+    position: relative;
+    z-index: 1;
+  }
+  
+  .toggle-wrapper:hover .log-type-count {
+    box-shadow: inset 0 1px 3px rgba(0,0,0,0.1);
+  }
+  
+  .toggle-wrapper.active .log-type-count {
+    background-color: var(--primary-color);
+    color: white;
+    transform: scale(1.05);
+  }
+  
+  /* Cores específicas para os contadores por tipo quando ativos */
+  .toggle-wrapper.active[data-log-type="appState"] .log-type-count { background-color: #7B1FA2; }
+  .toggle-wrapper.active[data-log-type="logs"] .log-type-count { background-color: #C62828; }
+  .toggle-wrapper.active[data-log-type="received"] .log-type-count { background-color: #C62828; }
+  .toggle-wrapper.active[data-log-type="sent"] .log-type-count { background-color: #2E7D32; }
+  .toggle-wrapper.active[data-log-type="decode"] .log-type-count { background-color: #F57F17; }
+  .toggle-wrapper.active[data-log-type="encode"] .log-type-count { background-color: #F57F17; }
+  
+  .logger-content {
+    display: flex;
+    height: calc(100% - 130px);
+    overflow: hidden;
+  }
+  
+  .logger-list-container {
+    width: 100%;
+    overflow: auto;
+    border-right: 1px solid var(--border-color);
+  }
+  
+  .section-header {
+    padding: 8px 10px;
+    font-weight: 500;
+    background: #f0f0f0;
+    border-bottom: 1px solid #ddd;
+    color: #333;
+  }
+  
+  #listLogs {
+    margin: 0;
+    padding: 0;
+    height: calc(100% - 30px);
+    overflow-y: auto;
+  }
+  
+  #listLogs li {
+    display: flex;
+    align-items: center;
+    padding: 10px 15px;
+    border-bottom: 1px solid #f0f0f0;
+    transition: background-color 0.2s;
+  }
+  
+  #listLogs li:hover {
+    background-color: #f5f5f5;
+  }
+  
+  #listLogs li.selected {
+    background-color: #e3f2fd;
+  }
+  
+  #listLogs li .log-time {
+    color: #666;
+    margin-right: 10px;
+    font-size: 12px;
+    white-space: nowrap;
+  }
+  
+  #listLogs li .log-type {
+    font-weight: bold;
+    margin-right: 10px;
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-size: 11px;
+    text-transform: uppercase;
+  }
+  
+  #listLogs li .log-preview {
+    color: #333;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    flex: 1;
+  }
+  
+  #waDetailPane {
+    padding: 15px;
+    background: #fff;
+    border-top: 1px solid var(--border-color);
+  }
+  
+  #waDetailInfo {
+    margin-bottom: 10px;
+    padding: 10px;
+    background: #f8f8f8;
+    border-radius: 4px;
+    border-left: 4px solid var(--primary-color);
+  }
+  
+  #waLogDetail {
+    display: none;
+    margin-top: 10px;
+    padding: 10px;
+    background: #fff;
+    border: 1px solid #eee;
+    border-radius: 4px;
+    max-height: 300px;
+    overflow: auto;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+  }
+  
+  #waLogDetail.visible {
+    display: block;
+  }
+  
+  /* Estilos para detalhes de logs */
+  .log-detail-header {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 15px;
+    margin-bottom: 10px;
+  }
+  
+  .log-badge {
+    color: white;
+    padding: 5px 10px;
+    border-radius: 4px;
+    font-weight: bold;
+    font-size: 12px;
+  }
+  
+  .log-timestamp, .log-time {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+  }
+  
+  .timestamp-label, .time-label {
+    font-weight: bold;
+    color: #555;
+  }
+  
+  .timestamp-value, .time-value {
+    color: #333;
+    font-family: monospace;
+    background: #f5f5f5;
+    padding: 2px 5px;
+    border-radius: 3px;
+    font-size: 12px;
+  }
+  
+  .log-data-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 8px 0;
+    border-bottom: 1px solid #eee;
+    margin-bottom: 10px;
+  }
+  
+  .log-data-type {
+    background: #f0f0f0;
+    padding: 2px 8px;
+    border-radius: 10px;
+    font-size: 11px;
+    color: #555;
+  }
+  
+  .log-data-type.error {
+    background: #ffebee;
+    color: #c62828;
+  }
+  
+  .log-data-content {
+    padding: 5px 0;
+  }
+  
+  /* Cores para os tipos de logs */
+  #listLogs li .log-type.appState { background: #F3E5F5; color: #7B1FA2; }
+  #listLogs li .log-type.logs { background: #FFEBEE; color: #C62828; }
+  #listLogs li .log-type.received { background: #FFEBEE; color: #C62828; }
+  #listLogs li .log-type.sent { background: #E8F5E9; color: #2E7D32; }
+  #listLogs li .log-type.decode { background: #FFF8E1; color: #F57F17; }
+  #listLogs li .log-type.encode { background: #FFF8E1; color: #F57F17; }
+  
+  /* Indicadores visuais para os toggles */
+  #toggle_appState:checked + .toggle-indicator { background: #7B1FA2; }
+  #toggle_logs:checked + .toggle-indicator { background: #C62828; }
+  #toggle_received:checked + .toggle-indicator { background: #C62828; }
+  #toggle_sent:checked + .toggle-indicator { background: #2E7D32; }
+  #toggle_decode:checked + .toggle-indicator { background: #F57F17; }
+  #toggle_encode:checked + .toggle-indicator { background: #F57F17; }
+  
+  /* Estilos responsivos */
+  @media (max-width: 600px) {
+    .logger-controls, .logger-filter-section {
+      flex-direction: column;
+      align-items: stretch;
+    }
+    
+    #listLogs li {
+      flex-direction: column;
+      align-items: flex-start;
+    }
+    
+    #listLogs li .log-preview {
+      margin-top: 5px;
+      width: 100%;
+    }
+  }
+  
+  .toggle-action-btn.disable-all:hover {
+    background-color: rgba(198, 40, 40, 0.08);
+    border-color: rgba(198, 40, 40, 0.3);
+  }
+  
+  .toggles-container {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    padding: 10px;
+  }
+  
+  /* Tooltip para os toggles */
+  .toggle-wrapper {
+    position: relative;
+  }
+  
+  .toggle-wrapper::after {
+    content: attr(data-tooltip);
+    position: absolute;
+    bottom: calc(100% + 5px);
+    left: 50%;
+    transform: translateX(-50%) scale(0.8);
+    background: rgba(0, 0, 0, 0.8);
+    color: white;
+    padding: 4px 8px;
+    border-radius: 4px;
+    font-size: 11px;
+    white-space: nowrap;
+    pointer-events: none;
+    opacity: 0;
+    visibility: hidden;
+    transition: all 0.2s ease;
+    z-index: 10;
+  }
+  
+  .toggle-wrapper:hover::after {
+    opacity: 1;
+    visibility: visible;
+    transform: translateX(-50%) scale(1);
+  }
+  
+  /* Estilo para tooltips para botões de ação */
+  .toggle-action-btn {
+    position: relative;
+  }
+  
+  .toggle-action-btn::after {
+    content: attr(data-tooltip);
+    position: absolute;
+    bottom: calc(100% + 5px);
+    left: 50%;
+    transform: translateX(-50%) scale(0.8);
+    background: rgba(0, 0, 0, 0.8);
+    color: white;
+    padding: 4px 8px;
+    border-radius: 4px;
+    font-size: 10px;
+    white-space: nowrap;
+    pointer-events: none;
+    opacity: 0;
+    visibility: hidden;
+    transition: all 0.2s ease;
+    z-index: 10;
+  }
+  
+  .toggle-action-btn:hover::after {
+    opacity: 1;
+    visibility: visible;
+    transform: translateX(-50%) scale(1);
+  }
+  
+  /* Adicionar setas aos tooltips */
+  .toggle-wrapper::before, .toggle-action-btn::before {
+    content: '';
+    position: absolute;
+    top: -5px;
+    left: 50%;
+    transform: translateX(-50%) rotate(180deg) scale(0.8);
+    width: 0;
+    height: 0;
+    border-left: 5px solid transparent;
+    border-right: 5px solid transparent;
+    border-top: 5px solid rgba(0, 0, 0, 0.8);
+    opacity: 0;
+    visibility: hidden;
+    transition: all 0.2s ease;
+    z-index: 10;
+  }
+  
+  .toggle-wrapper:hover::before, .toggle-action-btn:hover::before {
+    opacity: 1;
+    visibility: visible;
+    transform: translateX(-50%) rotate(180deg) scale(1);
+  }
+`;
+document.head.appendChild(loggerStyles);
+  
+  document.body.appendChild(panel);
+  
+  // Adicionar botão de reabrir
+  const reopenBtn = document.createElement('div');
+  reopenBtn.id = 'waReopen';
+  reopenBtn.innerHTML = '↩';
+  reopenBtn.style.cssText = `
+    position: fixed;
+    top: 10px;
+    right: 10px;
+    width: 30px;
+    height: 30px;
+    background: var(--primary-color);
+    color: white;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    font-size: 20px;
+    z-index: 99998;
+    box-shadow: 0 2px 5px rgba(0,0,0,0.2);
+    display: none;
+  `;
+  document.body.appendChild(reopenBtn);
+  
+  // Configurar controles
+  const closeBtn = panel.querySelector('#waClose');
+  const minimizeBtn = panel.querySelector('#waMinimize');
+  
+  if (closeBtn) {
+    closeBtn.addEventListener('click', () => {
+      panel.style.display = 'none';
+      reopenBtn.style.display = 'flex';
+      // Parar todas as atividades dos módulos
+      if (WAInspector.modules.events) {
+        WAInspector.modules.events.stop();
+      }
+      if (WAInspector.modules.logger) {
+        // Parar o logger
+        WAInspector.modules.logger.stop();
+        // Desativar o logger usando a mesma lógica do loggerToggle
+        WAInspector.modules.logger.config.enabled = false;
+        Object.keys(WAInspector.modules.logger.config.logTypes).forEach(type => {
+          WAInspector.modules.logger.config.logTypes[type] = false;
+        });
+        // Atualizar o texto do botão loggerToggle
+        const toggleBtn = document.getElementById('loggerToggle');
+        if (toggleBtn) {
+          toggleBtn.textContent = 'Logs: Desativados';
+          toggleBtn.classList.remove('active');
+        }
+        console.log('Logs desabilitados');
+      }
+    });
+  }
+
+  if (minimizeBtn) {
+    minimizeBtn.addEventListener('click', () => {
+      panel.classList.toggle('minimized');
+      minimizeBtn.textContent = panel.classList.contains('minimized') ? '+' : '_';
+    });
+  }
+
+  // Adicionar evento para reabrir o painel
+  reopenBtn.addEventListener('click', () => {
+    panel.style.display = 'flex';
+    reopenBtn.style.display = 'none';
+    // Reiniciar atividades dos módulos
+    if (WAInspector.modules.events) {
+      WAInspector.modules.events.init(WAInspector.modules.ui);
+    }
+    if (WAInspector.modules.logger) {
+      WAInspector.modules.logger.restart();
+    }
+  });
+  
+  return panel;
+}
   
   // Inicializar tabs
   function initializeTabs(ui) {
@@ -1256,7 +2963,8 @@
         important: Object.keys(WAInspector.data.moduleMap.importantModules).length,
         all: Object.keys(WAInspector.data.allModules).length,
         namespace: Object.keys(WAInspector.data.namespaceModules).length,
-        events: WAInspector.data.events.length
+        events: WAInspector.data.events.length,
+        logger: WAInspector.modules.logger ? WAInspector.modules.logger.logs.length : 0
       };
       
       // Configurar eventos para as tabs
@@ -1355,6 +3063,46 @@
           ui.showError(`Não foi possível popular a lista ${listId}: ${mainErr.message}`);
         }
       }
+
+       // Verificar se há logs disponíveis
+    const logItems = WAInspector.modules.logger ? 
+    WAInspector.modules.logger.logs.map((log, index) => ({
+      label: `${log.formattedTime} [${log.type.toUpperCase()}] ${getLogPreview(log)}`,
+      type: log.type,
+      index: index
+    })) : [];
+  
+  // Função auxiliar para obter prévia do log
+  function getLogPreview(log) {
+    try {
+      if (log.data && log.data.length) {
+        if (typeof log.data[0] === 'string') {
+          return log.data[0].substring(0, 50);
+        } else if (typeof log.data[0] === 'object') {
+          return log.data[0] !== null ? (Array.isArray(log.data[0]) ? 
+            `Array(${log.data[0].length})` : 'Objeto') : 'null';
+        } else {
+          return String(log.data[0]).substring(0, 50);
+        }
+      }
+      return '';
+    } catch (err) {
+      return 'Erro ao gerar prévia';
+    }
+  }
+
+  if (WAInspector.modules.logger) {
+    // Em vez de usar a função populate, vamos atualizar diretamente os logs
+    // através do módulo logger para ter mais controle sobre a formatação
+    WAInspector.modules.logger.logs.forEach((log, index) => {
+      WAInspector.modules.logger.addLogToList(log, index);
+    });
+    
+    // Configurar interface do logger
+    WAInspector.modules.logger.setupUI(ui);
+  }
+
+
       
       // Preparar dados para as listas
       const funcItems = Object.entries(WAInspector.data.functions || {}).map(([k, v]) => ({
@@ -1971,22 +3719,33 @@
   // Inicialização principal
   async function init() {
     try {
-      // Inicializar acesso ao webpack
-      await WAInspector.modules.webpack.init();
+      // Criar UI básica inicialmente
+      WAInspector.modules.ui = createUI({});
       
-      // Descobrir funções e mapear estrutura
-      await WAInspector.modules.discovery.init();
+      // Inicializar logger
+      WAInspector.modules.logger.init();
       
-      // Processar stores do WhatsApp
-      WAInspector.modules.stores = await processWhatsAppStores();
-      
-      // Inicializar interface do usuário
-      WAInspector.modules.ui = createUI(WAInspector.modules.stores);
-      
-      // Inicializar captura de eventos (após UI)
-      WAInspector.modules.events.init(WAInspector.modules.ui);
-      
-      console.log("WAInspector inicializado com sucesso!");
+      try {
+        // Inicializar acesso ao webpack
+        await WAInspector.modules.webpack.init();
+        
+        // Descobrir funções e mapear estrutura
+        await WAInspector.modules.discovery.init();
+        
+        // Processar stores do WhatsApp
+        WAInspector.modules.stores = await processWhatsAppStores();
+        
+        // Atualizar UI com os stores
+        WAInspector.modules.ui = createUI(WAInspector.modules.stores);
+        
+        // Inicializar captura de eventos (após UI)
+        WAInspector.modules.events.init(WAInspector.modules.ui);
+        
+        console.log("WAInspector inicializado com sucesso!");
+      } catch (err) {
+        console.warn("Alguns módulos do WhatsApp não estão disponíveis:", err);
+        WAInspector.modules.ui.showError("Alguns módulos do WhatsApp não estão disponíveis. A interface pode ter funcionalidades limitadas.");
+      }
       
       // Disponibiliza como variável global
       window.WAInspector = WAInspector;
@@ -1997,4 +3756,4 @@
   
   // Iniciar o WAInspector
   await init();
-})(); 
+})();
