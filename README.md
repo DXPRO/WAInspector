@@ -13,11 +13,44 @@ WAInspector é uma ferramenta avançada para inspeção das funcionalidades inte
 - ⚙️ **Acesso a Funções**: Visualize todas as funções disponíveis, incluindo parâmetros e detalhes
 - 💾 **Visualização de Stores**: Veja dados de chats, contatos, mensagens e outras informações
 - 🔬 **Inspeção Detalhada**: Navegue na estrutura interna do WhatsApp com visualização rica e interativa
+- 📝 **Logger Avançado**: Monitore diferentes tipos de comunicação e eventos do WhatsApp Web (baseado no [WhatsApp Web Logger](https://github.com/dbsdenis/wa-logging-scripts/))
+
+## WhatsApp Web Logger
+
+O WAInspector agora inclui um logger avançado baseado no projeto [WhatsApp Web Logger](https://github.com/dbsdenis/wa-logging-scripts/), que permite monitorar:
+
+| Tipo | Descrição | Cor |
+|------|-----------|-----|
+| **App State** | Mutações do estado da aplicação | Magenta |
+| **Logs** | Logs internos do WhatsApp | Vermelho |
+| **Received** | Stanzas (pacotes XML) recebidas do servidor | Vermelho |
+| **Sent** | Stanzas enviadas para o servidor | Verde |
+| **Decode** | Mensagens decodificadas do formato Protobuf | Amarelo |
+| **Encode** | Mensagens codificadas para o formato Protobuf | Amarelo |
+
+### Configuração do Logger
+
+```javascript
+// Visualizar configuração atual
+console.log(window.WALogger.getStatus());
+
+// Desabilitar todos os logs
+window.WALogger.setEnabled(false);
+
+// Habilitar todos os logs
+window.WALogger.setEnabled(true);
+
+// Desabilitar um tipo específico de log
+window.WALogger.setLogType('appState', false);
+
+// Habilitar um tipo específico de log
+window.WALogger.setLogType('sent', true);
+```
 
 ## Screenshots
 
 <p align="center">
-  <img src="https://blogger.googleusercontent.com/img/b/R29vZ2xl/AVvXsEjXZ0bsG76tnL8Gv8lC_k2xcoUiotaXZsLRwiKeXQB5lwK5HE8P5ae8LLRy8ueuguRpaXShjA7rROrLsXWqKCAepgUYXWRXTuVquc1mylvwnJBIL2Oop7UFK_f7eO0WfZZUf5EWVU7SSrxgbeGAUwAMxOq4sPIIm93ykELDxHFugTmHHTOHe5ALI_Q16_Y/s1600/Screenshot_14.png" alt="Interface do WAInspector" width="600"/>
+  <img src="https://blogger.googleusercontent.com/img/b/R29vZ2xl/AVvXsEhuM_xzHOYitmpX4nbR-jS8WTpoLbdeTTQZFTDcAdb0IaOXisZ1PliamLmVe5iw3AofZtbZ8c1oY7zbSqslrM0UQNVXh3oo9ZpFG6o4JCsgVTEKLVoh2VwqoZ5gFpaeyeyUf0jVQWvPUxRwsiUweMb4vaCYt4tCpA_MRQhkByMEpsJJ1E5UTDQB3X42jt8/s1600/Screenshot_15.png" alt="Interface do WAInspector" width="600"/>
   
 </p>
 
@@ -141,6 +174,7 @@ Este projeto está licenciado sob [MIT License](LICENSE).
 ## Agradecimentos
 
 - [WPPConnect Team](https://github.com/wppconnect-team) pelo incrível trabalho no [WA-JS](https://github.com/wppconnect-team/wa-js)
+- [dbsdenis](https://github.com/dbsdenis) pelo projeto [WhatsApp Web Logger](https://github.com/dbsdenis/wa-logging-scripts/) que inspirou a funcionalidade de logging avançado
 
 ---
 
